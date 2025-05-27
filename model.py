@@ -5,7 +5,6 @@ from long_seq import process_long_input
 from losses import ATLoss
 import torch.nn.functional as F
 from mlp import MLP
-from attn_unet import AttentionUNet
 
 class DocREModel(nn.Module):
 
@@ -24,18 +23,12 @@ class DocREModel(nn.Module):
         
         self.head_extractor = nn.Linear(2 * config.hidden_size, emb_size)
         self.tail_extractor = nn.Linear(2 * config.hidden_size, emb_size)
-        self.relation_extractor = nn.Linear(emb_size*block_size, config.num_labels)
-
+        self.relation_extractor = nn.Linear(2 * emb_size, emb_size)
         self.emb_size = emb_size
         self.block_size = block_size
         self.num_labels = num_labels
-
-        self.relation_extractor_feature_map = nn.Linear(2 * config.hidden_size, emb_size)
-        self.cv_unet = AttentionUNet(emb_size, config.num_labels, down_channel=256)
-        self.cv_mlp = MLP(emb_size, emb_size // 2, config.num_labels, num_heads=4)
-
-        self.bilinear = nn.Linear(config.num_labels * 3, config.num_labels)
-        
+        self.mlp = MLP(in_channels=emb_size, out_channels=512, hidden_dim=256, num_heads=4)
+        self.bilinear = nn.Linear(256, config.num_labels)
 
     def encode(self, input_ids, attention_mask):
         config = self.config
@@ -53,11 +46,10 @@ class DocREModel(nn.Module):
         offset = 1 if self.config.transformer_type in ["bert", "roberta"
                                                        ] else 0
         n, h, _, c = attention.size()
-        hss, tss, rss, mss = [], [], [], []
+        hss, tss, rss = [], [], []
         for i in range(len(entity_pos)):
-            entity_embs, entity_atts, mention_embs = [], [], []
+            entity_embs, entity_atts = [], []
             for e in entity_pos[i]:
-                m_emb = []
                 if len(e) > 1:
                     e_emb, e_att = [], []
                     for start, end in e:
@@ -65,26 +57,25 @@ class DocREModel(nn.Module):
                             # In case the entity mention is truncated due to limited max seq length.
                             e_emb.append(sequence_output[i, start + offset])
                             e_att.append(attention[i, :, start + offset])
-                            m_emb.append(sequence_output[i, start + offset])
                     if len(e_emb) > 0:
-                        e_emb = torch.logsumexp(torch.stack(e_emb, dim=0), dim=0)
+                        e_emb = torch.logsumexp(torch.stack(e_emb, dim=0),
+                                                dim=0)
                         e_att = torch.stack(e_att, dim=0).mean(0)
                     else:
-                        e_emb = torch.zeros(self.config.hidden_size).to(sequence_output)
+                        e_emb = torch.zeros(
+                            self.config.hidden_size).to(sequence_output)
                         e_att = torch.zeros(h, c).to(attention)
                 else:
                     start, end = e[0]
                     if start + offset < c:
                         e_emb = sequence_output[i, start + offset]
-                        m_emb.append(e_emb)
                         e_att = attention[i, :, start + offset]
                     else:
-                        e_emb = torch.zeros(self.config.hidden_size).to(sequence_output)
-                        m_emb.append(e_emb)
+                        e_emb = torch.zeros(
+                            self.config.hidden_size).to(sequence_output)
                         e_att = torch.zeros(h, c).to(attention)
                 entity_embs.append(e_emb)
                 entity_atts.append(e_att)
-                mention_embs.append(m_emb)
 
             entity_embs = torch.stack(entity_embs, dim=0)  # [n_e, d]
             entity_atts = torch.stack(entity_atts, dim=0)  # [n_e, h, seq_len]
@@ -101,66 +92,38 @@ class DocREModel(nn.Module):
             hss.append(hs)
             tss.append(ts)
             rss.append(rs)
-            mss.append(mention_embs)
 
         hss = torch.cat(hss, dim=0)
         tss = torch.cat(tss, dim=0)
         rss = torch.cat(rss, dim=0)
-        return hss, rss, tss, mss
+        return hss, rss, tss
     
 
-    def get_channel_map(self, sequence_output, attention, entity_pos, hts, mention_idx):
-       
-        hs, rs, ts, ms = self.get_hrt(sequence_output, attention, entity_pos, hts)
-        
+    def get_channel_map(self, sequence_output, attention, entity_pos, hts):
+        batch_size = len(hts)
+        map_rss = torch.zeros(batch_size, 42, 42, self.emb_size, device=sequence_output.device)
+
+        hs, rs, ts = self.get_hrt(sequence_output, attention, entity_pos, hts)
         hs = torch.tanh(self.head_extractor(torch.cat([hs, rs], dim=1)))
         ts = torch.tanh(self.tail_extractor(torch.cat([ts, rs], dim=1)))
-        
-        b1 = hs.view(-1, self.emb_size // self.block_size, self.block_size)
-        b2 = ts.view(-1, self.emb_size // self.block_size, self.block_size)
-        bl = (b1.unsqueeze(3) * b2.unsqueeze(2)).view(-1, self.emb_size * self.block_size)
-        r1 = self.relation_extractor(bl)
 
-        n = len(hts)
-        map_rss = torch.zeros(n, 128, 128, self.emb_size * 2, device=sequence_output.device)
+        bl = torch.cat([hs, ts], dim=1)
+        bl = self.relation_extractor(bl)
         offset = 0
         for b_idx, ht in enumerate(hts):
             for pair_idx, (h_idx, t_idx) in enumerate(ht):
-               
-                for m_h_idx, mention_h_pos in enumerate(entity_pos[b_idx][h_idx]):
-                    for m_t_idx, mention_t_pos in enumerate(entity_pos[b_idx][t_idx]):
-
-                        mention_h_idx = mention_idx[b_idx][mention_h_pos[0]]
-                        mention_t_idx = mention_idx[b_idx][mention_t_pos[0]]
-
-                        map_rss[b_idx, mention_h_idx, mention_t_idx] = torch.cat((ms[b_idx][h_idx][m_h_idx], ms[b_idx][t_idx][m_t_idx]), dim=-1)
+                map_rss[b_idx, h_idx, t_idx] = bl[offset + pair_idx]
             offset += len(ht)
-        
-        map_rss = self.relation_extractor_feature_map(map_rss)
 
-
-        map_rss_enhance_unet = self.cv_unet(map_rss)
-        r2 = self.get_ht(map_rss_enhance_unet, entity_pos, hts, mention_idx)
-
-        map_rss_enhance_mlp = self.cv_mlp(map_rss)
-        r3 = self.get_ht(map_rss_enhance_mlp, entity_pos, hts, mention_idx)
-
-        return r1, r2, r3
+        return map_rss
     
-    def get_ht(self, rel_enco, entity_pos, hts, mention_idx):
+    def get_ht(self, rel_enco, hts):
         htss = []
-        for b_idx in range(len(hts)):
-            ht_index = hts[b_idx]
+        for i in range(len(hts)):
+            ht_index = hts[i]
             for (h_index, t_index) in ht_index:
-                mts_embs = []
-                for m_h_idx, mention_h_pos in enumerate(entity_pos[b_idx][h_index]):
-                    for m_t_idx, mention_t_pos in enumerate(entity_pos[b_idx][t_index]):
-
-                        mention_h_idx = mention_idx[b_idx][mention_h_pos[0]]
-                        mention_t_idx = mention_idx[b_idx][mention_t_pos[0]]
-                        mts_embs.append(rel_enco[b_idx][mention_h_idx][mention_t_idx])
-                htss.append(torch.logsumexp(torch.stack(mts_embs, dim=0), dim=0))
-        htss = torch.stack(htss, dim=0)
+                htss.append(rel_enco[i,h_index,t_index])
+        htss = torch.stack(htss,dim=0)
         return htss
     
     def forward(self,
@@ -172,13 +135,18 @@ class DocREModel(nn.Module):
                 mention_idx=None):
 
         sequence_output, attention = self.encode(input_ids, attention_mask)
-        r1, r2, r3 = self.get_channel_map(sequence_output, attention, entity_pos, hts, mention_idx)
+        map_rss = self.get_channel_map(sequence_output, attention, entity_pos, hts)
+        feature_map = self.mlp(map_rss)
+        # print(feature_map.shape)
+        bl = self.get_ht(feature_map, hts)
         
-        logits = self.bilinear(torch.cat([r1, r2, r3], dim = -1))
+        logits = self.bilinear(bl)
 
-        output = (self.loss_fnt.get_label(logits, num_labels=self.num_labels), )
+        output = (self.loss_fnt.get_label(logits,
+                                          num_labels=self.num_labels), )
         if labels is not None:
             labels = [torch.tensor(label) for label in labels]
+
             labels = torch.cat(labels, dim=0).to(logits)
             loss = self.loss_fnt(logits.float(), labels.float())
             output = (loss.to(sequence_output), ) + output

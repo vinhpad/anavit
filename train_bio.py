@@ -80,8 +80,8 @@ def train(args, model, train_features, dev_features, test_features):
                     if dev_score > best_score:
                         best_score = dev_score
                         test_score, test_output = evaluate(args, model, test_features, tag="test")
-                        print(dev_output)
-                        wandb.log(dev_output, step=num_steps)
+                        print(test_output)
+                        wandb.log(test_output, step=num_steps)
                         
                         if args.save_path != "":
                             torch.save(model.state_dict(), args.save_path)
