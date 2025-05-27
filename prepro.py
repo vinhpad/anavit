@@ -1,5 +1,4 @@
 import json
-import dgl
 import torch
 from tqdm import tqdm
 
@@ -18,6 +17,7 @@ def read_cdr(file_in, tokenizer, max_seq_length=1024):
     pmids = set()
     features = []
     maxlen = 0
+    max_mention = 0
     with open(file_in, 'r') as infile:
         lines = infile.readlines()
         for i_l, line in enumerate(tqdm(lines)):
@@ -108,8 +108,8 @@ def read_cdr(file_in, tokenizer, max_seq_length=1024):
                     for mention_pos in entity:
                         zip_entity_pos.append(mention_pos[0])
                 
-                sorted(zip_entity_pos)
-                for idx, mention_pos in zip_entity_pos:
+                zip_entity_pos.sort()
+                for idx, mention_pos in enumerate(zip_entity_pos):
                     mention_idx[mention_pos] = idx
 
                 relations, hts = [], []
@@ -121,7 +121,7 @@ def read_cdr(file_in, tokenizer, max_seq_length=1024):
                     hts.append([h, t])
 
             maxlen = max(maxlen, len(sents))
-            
+            max_mention = max(max_mention, len(zip_entity_pos))
             sents = sents[:max_seq_length - 2]
             input_ids = tokenizer.convert_tokens_to_ids(sents)
             input_ids = tokenizer.build_inputs_with_special_tokens(input_ids)
@@ -138,4 +138,5 @@ def read_cdr(file_in, tokenizer, max_seq_length=1024):
                 features.append(feature)
     print("Number of documents: {}.".format(len(features)))
     print("Max document length: {}.".format(maxlen))
+    print("Max mention: {}.".format(max_mention))
     return features

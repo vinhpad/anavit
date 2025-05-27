@@ -5,7 +5,7 @@ python train_bio.py --data_dir ./dataset/cdr \
 --dev_file dev_filter.data \
 --test_file test_filter.data \
 --train_batch_size 4 \
---test_batch_size 4 \
+--test_batch_size 8 \
 --gradient_accumulation_steps 1 \
 --num_labels 1 \
 --learning_rate 2e-5 \

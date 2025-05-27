@@ -8,7 +8,7 @@ from transformers import AutoConfig, AutoModel, AutoTokenizer
 from transformers.optimization import AdamW, get_linear_schedule_with_warmup
 from model import DocREModel
 from utils import set_seed, collate_fn
-from prepro import read_cdr, read_gda
+from prepro import read_cdr
 import wandb
 from torch.cuda.amp import GradScaler
 
@@ -174,37 +174,16 @@ def main():
     parser.add_argument("--save_path", default="", type=str)
     parser.add_argument("--load_path", default="", type=str)
 
-    parser.add_argument(
-        "--config_name",
-        default="",
-        type=str,
-        help="Pretrained config name or path if not the same as model_name")
-    parser.add_argument(
-        "--tokenizer_name",
-        default="",
-        type=str,
-        help="Pretrained tokenizer name or path if not the same as model_name")
-    parser.add_argument(
-        "--max_seq_length",
-        default=1024,
-        type=int,
-        help=
+    parser.add_argument("--config_name", default="", type=str, help="Pretrained config name or path if not the same as model_name")
+    parser.add_argument("--tokenizer_name", default="", type=str, help="Pretrained tokenizer name or path if not the same as model_name")
+    parser.add_argument("--max_seq_length", default=1024, type=int, help=
         "The maximum total input sequence length after tokenization. Sequences longer "
         "than this will be truncated, sequences shorter will be padded.")
 
-    parser.add_argument("--train_batch_size",
-                        default=4,
-                        type=int,
-                        help="Batch size for training.")
-    parser.add_argument("--test_batch_size",
-                        default=8,
-                        type=int,
-                        help="Batch size for testing.")
-    parser.add_argument(
-        "--gradient_accumulation_steps",
-        default=1,
-        type=int,
-        help=
+    parser.add_argument("--train_batch_size", default=4, type=int, help="Batch size for training.")
+    parser.add_argument("--test_batch_size", default=8, type=int, help="Batch size for testing.")
+    
+    parser.add_argument("--gradient_accumulation_steps", default=1, type=int, help=
         "Number of updates steps to accumulate before performing a backward/update pass."
     )
     parser.add_argument("--num_labels",
@@ -245,7 +224,7 @@ def main():
                         help="Number of relation types in dataset.")
 
     args = parser.parse_args()
-    wandb.init(project="CDR")
+    wandb.init(project="CNN-CDR")
 
     device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
     args.n_gpu = torch.cuda.device_count()

@@ -31,7 +31,7 @@ class DocREModel(nn.Module):
         self.num_labels = num_labels
 
         self.relation_extractor_feature_map = nn.Linear(2 * config.hidden_size, emb_size)
-        self.cv_unet = AttentionUNet(emb_size, config.num_labels)
+        self.cv_unet = AttentionUNet(emb_size, config.num_labels, down_channel=256)
         self.cv_mlp = MLP(emb_size, emb_size // 2, config.num_labels, num_heads=4)
 
         self.bilinear = nn.Linear(config.num_labels * 3, config.num_labels)
@@ -53,38 +53,38 @@ class DocREModel(nn.Module):
         offset = 1 if self.config.transformer_type in ["bert", "roberta"
                                                        ] else 0
         n, h, _, c = attention.size()
-        hss, tss, mss = [], [], []
+        hss, tss, rss, mss = [], [], [], []
         for i in range(len(entity_pos)):
             entity_embs, entity_atts, mention_embs = [], [], []
             for e in entity_pos[i]:
+                m_emb = []
                 if len(e) > 1:
-                    e_emb, e_att, m_emb = [], [], []
+                    e_emb, e_att = [], []
                     for start, end in e:
                         if start + offset < c:
                             # In case the entity mention is truncated due to limited max seq length.
                             e_emb.append(sequence_output[i, start + offset])
                             e_att.append(attention[i, :, start + offset])
+                            m_emb.append(sequence_output[i, start + offset])
                     if len(e_emb) > 0:
-                        m_emb.extend(e_emb)
                         e_emb = torch.logsumexp(torch.stack(e_emb, dim=0), dim=0)
                         e_att = torch.stack(e_att, dim=0).mean(0)
                     else:
-                        m_emb.extend(e_emb)
                         e_emb = torch.zeros(self.config.hidden_size).to(sequence_output)
                         e_att = torch.zeros(h, c).to(attention)
                 else:
                     start, end = e[0]
                     if start + offset < c:
                         e_emb = sequence_output[i, start + offset]
-                        m_emb.extend(e_emb)
+                        m_emb.append(e_emb)
                         e_att = attention[i, :, start + offset]
                     else:
                         e_emb = torch.zeros(self.config.hidden_size).to(sequence_output)
-                        m_emb.extend(e_emb)
+                        m_emb.append(e_emb)
                         e_att = torch.zeros(h, c).to(attention)
                 entity_embs.append(e_emb)
                 entity_atts.append(e_att)
-                mention_embs.extend(m_emb)
+                mention_embs.append(m_emb)
 
             entity_embs = torch.stack(entity_embs, dim=0)  # [n_e, d]
             entity_atts = torch.stack(entity_atts, dim=0)  # [n_e, h, seq_len]
@@ -112,6 +112,7 @@ class DocREModel(nn.Module):
     def get_channel_map(self, sequence_output, attention, entity_pos, hts, mention_idx):
        
         hs, rs, ts, ms = self.get_hrt(sequence_output, attention, entity_pos, hts)
+        
         hs = torch.tanh(self.head_extractor(torch.cat([hs, rs], dim=1)))
         ts = torch.tanh(self.tail_extractor(torch.cat([ts, rs], dim=1)))
         
@@ -121,40 +122,43 @@ class DocREModel(nn.Module):
         r1 = self.relation_extractor(bl)
 
         n = len(hts)
-        map_rss = torch.zeros(n, 256, 256, self.emb_size, device=sequence_output.device)
+        map_rss = torch.zeros(n, 128, 128, self.emb_size * 2, device=sequence_output.device)
         offset = 0
         for b_idx, ht in enumerate(hts):
             for pair_idx, (h_idx, t_idx) in enumerate(ht):
                
-                for mention_h_pos in entity_pos[b_idx][h_idx]:
-                    for mention_t_pos in entity_pos[b_idx][t_idx]:
+                for m_h_idx, mention_h_pos in enumerate(entity_pos[b_idx][h_idx]):
+                    for m_t_idx, mention_t_pos in enumerate(entity_pos[b_idx][t_idx]):
 
-                        mention_h_idx = mention_idx[mention_h_pos[0]]
-                        mention_t_idx = mention_idx[mention_t_pos[0]]
+                        mention_h_idx = mention_idx[b_idx][mention_h_pos[0]]
+                        mention_t_idx = mention_idx[b_idx][mention_t_pos[0]]
 
-                        map_rss[b_idx, mention_h_idx, mention_t_idx] = torch.cat([ms[b_idx][mention_h_idx], ms[b_idx][mention_t_idx]], dim=-1)
+                        map_rss[b_idx, mention_h_idx, mention_t_idx] = torch.cat((ms[b_idx][h_idx][m_h_idx], ms[b_idx][t_idx][m_t_idx]), dim=-1)
             offset += len(ht)
         
         map_rss = self.relation_extractor_feature_map(map_rss)
 
 
-        map_rss_enhance_unet = self.unet(map_rss)
-        r2 = self.get_ht(map_rss_enhance_unet)
+        map_rss_enhance_unet = self.cv_unet(map_rss)
+        r2 = self.get_ht(map_rss_enhance_unet, entity_pos, hts, mention_idx)
 
-        map_rss_enhance_mlp = self.mlp(map_rss)
-        r3 = self.get_ht(map_rss_enhance_mlp)
+        map_rss_enhance_mlp = self.cv_mlp(map_rss)
+        r3 = self.get_ht(map_rss_enhance_mlp, entity_pos, hts, mention_idx)
 
         return r1, r2, r3
     
-    def get_ht(self, rel_enco, hts, mention_idx):
+    def get_ht(self, rel_enco, entity_pos, hts, mention_idx):
         htss = []
-        for i in range(len(hts)):
-            ht_index = hts[i]
+        for b_idx in range(len(hts)):
+            ht_index = hts[b_idx]
             for (h_index, t_index) in ht_index:
                 mts_embs = []
-                for mention_h_idx in mention_idx[i][h_index]:
-                    for mention_t_idx in mention_idx[i][t_index]:
-                        mts_embs.append(rel_enco[mention_h_idx][mention_t_idx])
+                for m_h_idx, mention_h_pos in enumerate(entity_pos[b_idx][h_index]):
+                    for m_t_idx, mention_t_pos in enumerate(entity_pos[b_idx][t_index]):
+
+                        mention_h_idx = mention_idx[b_idx][mention_h_pos[0]]
+                        mention_t_idx = mention_idx[b_idx][mention_t_pos[0]]
+                        mts_embs.append(rel_enco[b_idx][mention_h_idx][mention_t_idx])
                 htss.append(torch.logsumexp(torch.stack(mts_embs, dim=0), dim=0))
         htss = torch.stack(htss, dim=0)
         return htss

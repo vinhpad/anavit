@@ -1,8 +1,6 @@
 import torch
 import random
 import numpy as np
-import dgl
-
 
 def set_seed(args):
     random.seed(args.seed)

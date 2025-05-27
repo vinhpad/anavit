@@ -32,8 +32,9 @@ class AttentionUNet(torch.nn.Module):
         :return:
         """
         # attention_channels as the shape of: batch_size x channel x width x height
-        x = x.permute(0, 3, 1, 2).contiguous()
+        
         x = attention_channels
+        x = x.permute(0, 3, 1, 2).contiguous()
         x1 = self.inc(x)
         x2 = self.down1(x1)
         x3 = self.down2(x2)
