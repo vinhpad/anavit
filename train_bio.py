@@ -50,7 +50,7 @@ def train(args, model, train_features, dev_features, test_features):
                     'labels': batch[2],
                     'entity_pos': batch[3],
                     'hts': batch[4],
-                    'mention_idx': batch[5]
+                    'graph': batch[5]
                 }
                 outputs = model(**inputs)
                 loss = outputs[0] / args.gradient_accumulation_steps
@@ -131,7 +131,7 @@ def evaluate(args, model, features, tag="dev"):
             'attention_mask': batch[1].to(args.device),
             'entity_pos': batch[3],
             'hts': batch[4],
-            'mention_idx': batch[5]
+            'graph': batch[5]
         }
 
         with torch.no_grad():
@@ -222,6 +222,11 @@ def main():
                         type=int,
                         default=2,
                         help="Number of relation types in dataset.")
+    
+    parser.add_argument("--attn_heads", default=2, type=int, help="Attention heads")
+    parser.add_argument("--gcn_layers", default=2, type=int, help="GCN layers")
+    parser.add_argument("--iters", default=2, type=int, help="Iteration")
+    parser.add_argument("--use_graph", default=True, action="store_true", help="Use graph")
 
     args = parser.parse_args()
     wandb.init(project="CNN-CDR")
@@ -238,7 +243,7 @@ def main():
         args.tokenizer_name
         if args.tokenizer_name else args.model_name_or_path, )
 
-    read = read_cdr if "cdr" in args.data_dir else read_gda
+    read = read_cdr
 
     train_file = os.path.join(args.data_dir, args.train_file)
     dev_file = os.path.join(args.data_dir, args.dev_file)
@@ -264,7 +269,7 @@ def main():
     config.transformer_type = args.transformer_type
 
     set_seed(args)
-    model = DocREModel(config, model, num_labels=args.num_labels)
+    model = DocREModel(args, config, model, num_labels=args.num_labels)
     model.to(0)
 
     if args.load_path == "":

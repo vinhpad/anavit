@@ -1,10 +1,95 @@
 import json
-import torch
+import numpy as np
 from tqdm import tqdm
+from spacy.tokens import Doc
+import spacy
+
+nlp = spacy.load('en_core_web_sm')
 
 docred_rel2id = json.load(open('meta/rel2id.json', 'r'))
 cdr_rel2id = {'1:NR:2': 0, '1:CID:2': 1}
 gda_rel2id = {'1:NR:2': 0, '1:GDA:2': 1}
+
+def get_anaphors(sents):
+    potential_mentions = []
+
+    for sent_id, sent in enumerate(sents):
+        doc_spacy = Doc(nlp.vocab, words=sent)
+        for name, tool in nlp.pipeline:
+            if name != 'ner':
+                tool(doc_spacy)
+
+        for token in doc_spacy:
+            potential_mention = ''
+            if token.dep_ == 'det' and token.text.lower() == 'the':
+                potential_name = doc_spacy.text[token.idx:token.head.idx + len(token.head.text)]
+                pos_start, pos_end = token.i, token.i + len(potential_name.split(' '))
+                potential_mention = {
+                    'pos': [pos_start, pos_end],
+                    'type': 'MISC',
+                    'sent_id': sent_id,
+                    'name': potential_name
+                }
+                potential_mentions.append(potential_mention)
+
+            if token.pos_ == 'PRON':
+                potential_name = token.text
+                pos_start = sent.index(token.text)
+                potential_mention = {
+                    'pos': [pos_start, pos_start + 1],
+                    'type': 'MISC',
+                    'sent_id': sent_id,
+                    'name': potential_name
+                }
+                potential_mentions.append(potential_mention)
+
+
+    return potential_mentions
+
+def create_graph(entity_pos):
+    anaphor_pos, entity_pos = entity_pos[-1], entity_pos[:-1]
+    mention_num = len([mention for entity in entity_pos for mention in entity])
+    anaphor_num = len(anaphor_pos)
+
+    N_nodes = mention_num + anaphor_num
+    nodes_adj = np.zeros((N_nodes, N_nodes), dtype=np.int32)
+
+    edges_cnt = 1
+    # add self-loop
+    for i in range(N_nodes):
+        nodes_adj[i, i] = edges_cnt
+
+    edges_cnt = 2
+    # add mention-anaphor edges
+    for i in range(mention_num):
+        for j in range(mention_num, N_nodes):
+            nodes_adj[i, j] = edges_cnt
+            nodes_adj[j, i] = edges_cnt
+
+    entities = []
+    i = 0
+    for e in entity_pos:
+        ms = []
+        for _ in e:
+            ms.append(i)
+            i += 1
+        entities.append(ms)
+
+    edges_cnt = 3
+    # add co-reference edges
+    for e in entities:
+        if len(e) == 1:
+            continue
+        for m1 in e:
+            for m2 in e:
+                if m1 != m2:
+                    nodes_adj[m1, m2] = edges_cnt
+
+    edges_cnt = 4
+    # add inter-entity edges
+    nodes_adj[nodes_adj == 0] = edges_cnt
+
+    return nodes_adj
 
 def chunks(l, n):
     res = []
@@ -49,6 +134,8 @@ def read_cdr(file_in, tokenizer, max_seq_length=1024):
                         entity_pos.add((start, end, tpy))
 
                 sents = [t.split(' ') for t in text.split('|')]
+                anaphors = get_anaphors(sents=sents)
+
                 new_sents = []
                 sent_map = {}
                 i_t = 0
@@ -65,7 +152,6 @@ def read_cdr(file_in, tokenizer, max_seq_length=1024):
                         i_t += 1
                     sent_map[i_t] = len(new_sents)
                 sents = new_sents
-
                 entity_pos = []
 
                 for p in prs:
@@ -102,15 +188,13 @@ def read_cdr(file_in, tokenizer, max_seq_length=1024):
                     else:
                         train_triples[(h_id, t_id)].append({'relation': r})
                 
-                zip_entity_pos = []
-                mention_idx = {}
-                for entity in entity_pos:
-                    for mention_pos in entity:
-                        zip_entity_pos.append(mention_pos[0])
-                
-                zip_entity_pos.sort()
-                for idx, mention_pos in enumerate(zip_entity_pos):
-                    mention_idx[mention_pos] = idx
+                entity_pos.append([])
+                for anaphor in anaphors:
+                    a_start, a_end = anaphor['pos']
+                    a_start = sent_map[a_start]
+                    a_end = sent_map[a_end]
+                    entity_pos[-1].append((a_start, a_end))
+                graph = create_graph(entity_pos)
 
                 relations, hts = [], []
                 for h, t in train_triples.keys():
@@ -121,7 +205,6 @@ def read_cdr(file_in, tokenizer, max_seq_length=1024):
                     hts.append([h, t])
 
             maxlen = max(maxlen, len(sents))
-            max_mention = max(max_mention, len(zip_entity_pos))
             sents = sents[:max_seq_length - 2]
             input_ids = tokenizer.convert_tokens_to_ids(sents)
             input_ids = tokenizer.build_inputs_with_special_tokens(input_ids)
@@ -129,11 +212,11 @@ def read_cdr(file_in, tokenizer, max_seq_length=1024):
             if len(hts) > 0:
                 feature = {
                     'input_ids': input_ids,
-                    'entity_pos': entity_pos,
+                    'entity_pos': entity_pos if entity_pos[-1] != [] else entity_pos[:-1],
                     'labels': relations,
                     'hts': hts,
                     'title': pmid,
-                    'mention_idx': mention_idx
+                    'graph': graph
                 }
                 features.append(feature)
     print("Number of documents: {}.".format(len(features)))
