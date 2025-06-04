@@ -32,14 +32,6 @@ class DocREModel(nn.Module):
         self.mlp = MLP(in_channels=emb_size, out_channels=512, hidden_dim=256, num_heads=4)
         self.bilinear = nn.Linear(256, config.num_labels)
 
-        self.edges = ['self-loop', 'mention-anaphor', 'co-reference', 'inter-entity']
-
-        if args.use_graph:
-            self.graph_layers = nn.ModuleList(
-                AttentionGCNLayer(self.edges, self.hidden_size, nhead=args.attn_heads, iters=args.gcn_layers) for _ in
-                range(args.iters))
-
-
     def encode(self, input_ids, attention_mask):
         config = self.config
         if config.transformer_type == "bert":
@@ -108,66 +100,15 @@ class DocREModel(nn.Module):
         rss = torch.cat(rss, dim=0)
         return hss, rss, tss
     
-    def graph(self, sequence_output, graphs, attention, entity_pos, hts):
-        offset = 1 if self.config.transformer_type in ["bert", "roberta"
-                                                       ] else 0
-        n, h, _, c = attention.size()
 
-        max_node = max([graph.shape[0] for graph in graphs])
-        graph_fea = torch.zeros(n, max_node, self.config.hidden_size, device=sequence_output.device)
-        graph_adj = torch.zeros(n, max_node, max_node, device=sequence_output.device)
-
-        for i, graph in enumerate(graphs):
-            nodes_num = graph.shape[0]
-            graph_adj[i, :nodes_num, :nodes_num] = torch.from_numpy(graph)
-
-        for i in range(len(entity_pos)):
-            mention_index = 0
-            for e in entity_pos[i]:
-                for start, end in e:
-                    if start + offset < c:
-                        # In case the entity mention is truncated due to limited max seq length.
-                        graph_fea[i, mention_index, :] = sequence_output[i, start + offset]
-                    else:
-                        graph_fea[i, mention_index, :] = torch.zeros(self.config.hidden_size).to(sequence_output)
-                    mention_index += 1
-
-        for graph_layer in self.graph_layers:
-            graph_fea, _ = graph_layer(graph_fea, graph_adj)
-
-        h_entity, t_entity = [], []
-        for i in range(len(entity_pos)):
-            entity_embs = []
-            mention_index = 0
-            for e in entity_pos[i]:
-                e_emb = graph_fea[i, mention_index:mention_index + len(e), :]
-                mention_index += len(e)
-
-                e_emb = torch.logsumexp(e_emb, dim=0) if len(e) > 1 else e_emb.squeeze(0)
-                entity_embs.append(e_emb)
-
-            entity_embs = torch.stack(entity_embs, dim=0)
-            ht_i = torch.LongTensor(hts[i]).to(sequence_output.device)
-            hs = torch.index_select(entity_embs, 0, ht_i[:, 0])
-            ts = torch.index_select(entity_embs, 0, ht_i[:, 1])
-            h_entity.append(hs)
-            t_entity.append(ts)
-
-        h_entity = torch.cat(h_entity, dim=0)
-        t_entity = torch.cat(t_entity, dim=0)
-        return h_entity, t_entity
-
-    
-
-    def get_channel_map(self, sequence_output, attention, entity_pos, hts, graph):
+    def get_channel_map(self, sequence_output, attention, entity_pos, hts):
         batch_size = len(hts)
         map_rss = torch.zeros(batch_size, 42, 42, self.emb_size, device=sequence_output.device)
 
         hs, rs, ts = self.get_hrt(sequence_output, attention, entity_pos, hts)
 
-        hs_enhance, ts_enhance = self.graph(sequence_output, graph, attention, entity_pos, hts)
-        hs = torch.tanh(self.head_extractor(torch.cat([hs_enhance, rs], dim=1)))
-        ts = torch.tanh(self.tail_extractor(torch.cat([ts_enhance, rs], dim=1)))
+        hs = torch.tanh(self.head_extractor(torch.cat([hs, rs], dim=1)))
+        ts = torch.tanh(self.tail_extractor(torch.cat([ts, rs], dim=1)))
 
         bl = torch.cat([hs, ts], dim=1)
         bl = self.relation_extractor(bl)
@@ -193,13 +134,11 @@ class DocREModel(nn.Module):
                 attention_mask=None,
                 labels=None,
                 entity_pos=None,
-                hts=None,
-                graph=None):
+                hts=None):
 
         sequence_output, attention = self.encode(input_ids, attention_mask)
-        map_rss = self.get_channel_map(sequence_output, attention, entity_pos, hts, graph)
+        map_rss = self.get_channel_map(sequence_output, attention, entity_pos, hts)
         feature_map = self.mlp(map_rss)
-        # print(feature_map.shape)
         bl = self.get_ht(feature_map, hts)
         
         logits = self.bilinear(bl)
