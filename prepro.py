@@ -53,7 +53,6 @@ def read_cdr(file_in, tokenizer, max_seq_length=1024):
                         entity_pos.add((start, end, tpy))
 
                 sents = [t.split(' ') for t in text.split('|')]
-                # anaphors = get_anaphors(sents=sents)
 
                 new_sents = []
                 sent_map = {}
@@ -107,6 +106,14 @@ def read_cdr(file_in, tokenizer, max_seq_length=1024):
                     else:
                         train_triples[(h_id, t_id)].append({'relation': r})
                 
+                mention_pos = {}
+                mention_zip = []
+                for entity in entity_pos:
+                    for mention in entity:
+                        mention_zip.append(mention[0])
+                mention_zip.sort()
+                for idx, pos in enumerate(mention_zip):
+                    mention_pos[pos] = idx 
 
                 relations, hts = [], []
                 for h, t in train_triples.keys():
@@ -127,7 +134,8 @@ def read_cdr(file_in, tokenizer, max_seq_length=1024):
                     'entity_pos': entity_pos if entity_pos[-1] != [] else entity_pos[:-1],
                     'labels': relations,
                     'hts': hts,
-                    'title': pmid
+                    'title': pmid,
+                    'mention_pos': mention_pos
                 }
                 features.append(feature)
     print("Number of documents: {}.".format(len(features)))

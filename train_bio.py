@@ -50,7 +50,7 @@ def train(args, model, train_features, dev_features, test_features):
                     'labels': batch[2],
                     'entity_pos': batch[3],
                     'hts': batch[4],
-                    # 'graph': batch[5]
+                    'mention_pos': batch[5]
                 }
                 outputs = model(**inputs)
                 loss = outputs[0] / args.gradient_accumulation_steps
@@ -131,7 +131,7 @@ def evaluate(args, model, features, tag="dev"):
             'attention_mask': batch[1].to(args.device),
             'entity_pos': batch[3],
             'hts': batch[4],
-            # 'graph': batch[5]
+            'mention_pos': batch[5]
         }
 
         with torch.no_grad():
@@ -243,7 +243,7 @@ def main():
         args.tokenizer_name
         if args.tokenizer_name else args.model_name_or_path, )
 
-    read = read_gda
+    read = read_cdr
 
     train_file = os.path.join(args.data_dir, args.train_file)
     dev_file = os.path.join(args.data_dir, args.dev_file)

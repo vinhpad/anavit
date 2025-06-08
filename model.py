@@ -1,7 +1,7 @@
 import torch
 import torch.nn as nn
 from opt_einsum import contract
-from graph import AttentionGCNLayer
+from attn_unet import AttentionUNet
 from long_seq import process_long_input
 from losses import ATLoss
 import torch.nn.functional as F
@@ -31,6 +31,10 @@ class DocREModel(nn.Module):
         self.num_labels = num_labels
         self.mlp = MLP(in_channels=emb_size, out_channels=512, hidden_dim=256, num_heads=4)
         self.bilinear = nn.Linear(256, config.num_labels)
+
+        self.segmentation_net = AttentionUNet(input_channels=emb_size,
+                                              class_number=256,
+                                              down_channel=128)
 
     def encode(self, input_ids, attention_mask):
         config = self.config
@@ -101,9 +105,9 @@ class DocREModel(nn.Module):
         return hss, rss, tss
     
 
-    def get_channel_map(self, sequence_output, attention, entity_pos, hts):
+    def get_channel_map(self, sequence_output, attention, entity_pos, hts, mention_pos):
         batch_size = len(hts)
-        map_rss = torch.zeros(batch_size, 42, 42, self.emb_size, device=sequence_output.device)
+        map_rss = torch.zeros(batch_size, 128, 128, self.emb_size, device=sequence_output.device)
 
         hs, rs, ts = self.get_hrt(sequence_output, attention, entity_pos, hts)
 
@@ -115,17 +119,30 @@ class DocREModel(nn.Module):
         offset = 0
         for b_idx, ht in enumerate(hts):
             for pair_idx, (h_idx, t_idx) in enumerate(ht):
-                map_rss[b_idx, h_idx, t_idx] = bl[offset + pair_idx]
+                for h_pos in entity_pos[b_idx][h_idx]:
+                    for t_pos in entity_pos[b_idx][t_idx]:
+                        m_h_idx = mention_pos[b_idx][h_pos[0]]
+                        m_t_idx = mention_pos[b_idx][t_pos[0]]
+
+                        map_rss[b_idx, m_h_idx, m_t_idx] = bl[offset + pair_idx]
             offset += len(ht)
 
         return map_rss
     
-    def get_ht(self, rel_enco, hts):
+    def get_ht(self, rel_enco, entity_pos, hts, mention_pos):
         htss = []
         for i in range(len(hts)):
             ht_index = hts[i]
             for (h_index, t_index) in ht_index:
-                htss.append(rel_enco[i,h_index,t_index])
+                rel_embed = []
+                for h_pos in entity_pos[i][h_index]:
+                    for t_pos in entity_pos[i][t_index]:
+                        
+                        m_h_idx = mention_pos[i][h_pos[0]]
+                        m_t_idx = mention_pos[i][t_pos[0]]
+                        rel_embed.append(rel_enco[i][m_h_idx][m_t_idx])
+                        
+                htss.append(torch.mean(rel_embed, dim=0))
         htss = torch.stack(htss,dim=0)
         return htss
     
@@ -134,12 +151,13 @@ class DocREModel(nn.Module):
                 attention_mask=None,
                 labels=None,
                 entity_pos=None,
-                hts=None):
+                hts=None,
+                mention_pos=None):
 
         sequence_output, attention = self.encode(input_ids, attention_mask)
-        map_rss = self.get_channel_map(sequence_output, attention, entity_pos, hts)
-        feature_map = self.mlp(map_rss)
-        bl = self.get_ht(feature_map, hts)
+        map_rss = self.get_channel_map(sequence_output, attention, entity_pos, hts, mention_pos)
+        feature_map = self.segmentation_net(map_rss)
+        bl = self.get_ht(feature_map, entity_pos, hts, mention_pos)
         
         logits = self.bilinear(bl)
 
