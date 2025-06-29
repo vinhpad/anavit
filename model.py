@@ -1,11 +1,11 @@
 import torch
 import torch.nn as nn
 from opt_einsum import contract
-from graph import AttentionGCNLayer
 from long_seq import process_long_input
 from losses import ATLoss
 import torch.nn.functional as F
-from mlp import MLP
+
+from networks.swinunet.swin_transformer_unet_skip_expand_decoder_sys import SwinTransformerSys
 
 class DocREModel(nn.Module):
 
@@ -25,12 +25,21 @@ class DocREModel(nn.Module):
         
         self.head_extractor = nn.Linear(2 * config.hidden_size, emb_size)
         self.tail_extractor = nn.Linear(2 * config.hidden_size, emb_size)
-        self.relation_extractor = nn.Linear(2 * emb_size, emb_size)
+        self.relation_extractor = nn.Sequential(
+            nn.Linear(2 * emb_size, emb_size),
+            nn.ReLU(),
+            nn.Linear(emb_size, 3),
+        )
+
         self.emb_size = emb_size
         self.block_size = block_size
         self.num_labels = num_labels
-        self.mlp = MLP(in_channels=emb_size, out_channels=512, hidden_dim=256, num_heads=4)
+        # self.mlp = MLP(in_channels=emb_size, out_channels=512, hidden_dim=256, num_heads=4)
         self.bilinear = nn.Linear(256, config.num_labels)
+
+        self.segmentation_net = SwinTransformerSys(
+            num_classes=256,
+        )
 
     def encode(self, input_ids, attention_mask):
         config = self.config
@@ -103,7 +112,7 @@ class DocREModel(nn.Module):
 
     def get_channel_map(self, sequence_output, attention, entity_pos, hts):
         batch_size = len(hts)
-        map_rss = torch.zeros(batch_size, 42, 42, self.emb_size, device=sequence_output.device)
+        map_rss = torch.zeros(batch_size, 224, 224, 3, device=sequence_output.device)
 
         hs, rs, ts = self.get_hrt(sequence_output, attention, entity_pos, hts)
 
@@ -138,7 +147,12 @@ class DocREModel(nn.Module):
 
         sequence_output, attention = self.encode(input_ids, attention_mask)
         map_rss = self.get_channel_map(sequence_output, attention, entity_pos, hts)
-        feature_map = self.mlp(map_rss)
+        print("map_rss shape:", map_rss.shape)
+        map_rss = map_rss.permute(0, 3, 1, 2)
+        
+        feature_map = self.segmentation_net(map_rss)
+        feature_map = feature_map.permute(0, 2, 3, 1)  # [batch_size, 42, 42, 96]
+
         bl = self.get_ht(feature_map, hts)
         
         logits = self.bilinear(bl)

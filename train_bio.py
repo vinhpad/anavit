@@ -8,7 +8,7 @@ from transformers import AutoConfig, AutoModel, AutoTokenizer
 from transformers.optimization import AdamW, get_linear_schedule_with_warmup
 from model import DocREModel
 from utils import set_seed, collate_fn
-from prepro import read_cdr, read_gda
+from prepro import read_cdr
 import wandb
 from torch.cuda.amp import GradScaler
 
@@ -50,7 +50,6 @@ def train(args, model, train_features, dev_features, test_features):
                     'labels': batch[2],
                     'entity_pos': batch[3],
                     'hts': batch[4],
-                    # 'graph': batch[5]
                 }
                 outputs = model(**inputs)
                 loss = outputs[0] / args.gradient_accumulation_steps
@@ -131,7 +130,6 @@ def evaluate(args, model, features, tag="dev"):
             'attention_mask': batch[1].to(args.device),
             'entity_pos': batch[3],
             'hts': batch[4],
-            # 'graph': batch[5]
         }
 
         with torch.no_grad():
@@ -223,11 +221,6 @@ def main():
                         default=2,
                         help="Number of relation types in dataset.")
     
-    parser.add_argument("--attn_heads", default=2, type=int, help="Attention heads")
-    parser.add_argument("--gcn_layers", default=2, type=int, help="GCN layers")
-    parser.add_argument("--iters", default=2, type=int, help="Iteration")
-    parser.add_argument("--use_graph", default=True, action="store_true", help="Use graph")
-
     args = parser.parse_args()
     wandb.init(project="CNN-GDA")
 
@@ -243,7 +236,7 @@ def main():
         args.tokenizer_name
         if args.tokenizer_name else args.model_name_or_path, )
 
-    read = read_gda
+    read = read_cdr
 
     train_file = os.path.join(args.data_dir, args.train_file)
     dev_file = os.path.join(args.data_dir, args.dev_file)
