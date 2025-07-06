@@ -220,9 +220,18 @@ def main():
                         type=int,
                         default=2,
                         help="Number of relation types in dataset.")
-    
+    parser.add_argument('--n_skip', type=int,
+                    default=3, help='using number of skip-connect, default is num')
+    parser.add_argument('--vit_name', type=str,
+                    default='R50-ViT-B_16', help='select one vit model')
+    parser.add_argument('--vit_patches_size', type=int,
+                    default=16, help='vit_patches_size, default is 16')
+    parser.add_argument('--img_size', type=int,
+                    default=224, help='input patch size of network input')
+
+    parser.add_argument("--segmentation_net", default='unet' ,type=str)
     args = parser.parse_args()
-    wandb.init(project="CNN-GDA")
+    wandb.init(project="CNN-CDR")
 
     device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
     args.n_gpu = torch.cuda.device_count()

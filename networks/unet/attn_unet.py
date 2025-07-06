@@ -26,21 +26,12 @@ class AttentionUNet(torch.nn.Module):
         self.outc = OutConv(up_channel_2 // 4, class_number)
 
     def forward(self, attention_channels):
-        """
-        Given multi-channel attention map, return the logits of every one mapping into 3-class
-        :param attention_channels:
-        :return:
-        """
-        # attention_channels as the shape of: batch_size x channel x width x height
-        x = attention_channels.permute(0, 3, 1, 2).contiguous()
         x1 = self.inc(x)
         x2 = self.down1(x1)
         x3 = self.down2(x2)
         x = self.up1(x3, x2)
         x = self.up2(x, x1)
         output = self.outc(x)
-        # attn_map as the shape of: batch_size x width x height x class
-        output = output.permute(0, 2, 3, 1).contiguous()
         return output
 
 

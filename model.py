@@ -5,7 +5,14 @@ from long_seq import process_long_input
 from losses import ATLoss
 import torch.nn.functional as F
 
-from networks.swinunet.swin_transformer_unet_skip_expand_decoder_sys import SwinTransformerSys
+from networks.swinunet.swin_transformer_unet_skip_expand_decoder_sys import SwinTransformerSys as SwinUnet
+from networks.transunet.vit_seg_modeling import VisionTransformer
+from networks.transunet.vit_seg_modeling import CONFIGS as CONFIGS_ViT_seg
+from networks.unet.attn_unet import AttentionUNet
+
+from losses import DiceLoss
+from segformer_pytorch import Segformer
+from transformers import SegformerModel, SegformerConfig
 
 class DocREModel(nn.Module):
 
@@ -21,7 +28,7 @@ class DocREModel(nn.Module):
         self.model = model
         self.hidden_size = config.hidden_size
         self.loss_fnt = ATLoss()
-
+        self.dice_loss = DiceLoss(config.num_labels)
         
         self.head_extractor = nn.Linear(2 * config.hidden_size, emb_size)
         self.tail_extractor = nn.Linear(2 * config.hidden_size, emb_size)
@@ -34,12 +41,19 @@ class DocREModel(nn.Module):
         self.emb_size = emb_size
         self.block_size = block_size
         self.num_labels = num_labels
-        # self.mlp = MLP(in_channels=emb_size, out_channels=512, hidden_dim=256, num_heads=4)
-        self.bilinear = nn.Linear(256, config.num_labels)
 
-        self.segmentation_net = SwinTransformerSys(
-            num_classes=256,
-        )
+        if args.segmentation_net == 'unet':
+            self.segmentation_net = AttentionUNet(
+                input_channels = 3,
+                class_number = 2,
+                down_channel = 256
+            )
+        else:
+            if args.segmentation_net == 'swin_unet':
+                self.segmentation_net = SwinUnet(
+                    img_size=224,
+                    num_classes=2,
+                )
 
     def encode(self, input_ids, attention_mask):
         config = self.config
@@ -147,23 +161,23 @@ class DocREModel(nn.Module):
 
         sequence_output, attention = self.encode(input_ids, attention_mask)
         map_rss = self.get_channel_map(sequence_output, attention, entity_pos, hts)
-        print("map_rss shape:", map_rss.shape)
+      
         map_rss = map_rss.permute(0, 3, 1, 2)
-        
         feature_map = self.segmentation_net(map_rss)
         feature_map = feature_map.permute(0, 2, 3, 1)  # [batch_size, 42, 42, 96]
+        logits = self.get_ht(feature_map, hts)
+        output = (self.loss_fnt.get_label(logits, num_labels=self.num_labels), )
 
-        bl = self.get_ht(feature_map, hts)
         
-        logits = self.bilinear(bl)
-
-        output = (self.loss_fnt.get_label(logits,
-                                          num_labels=self.num_labels), )
         if labels is not None:
             labels = [torch.tensor(label) for label in labels]
-
+            # print("labels shape:", len(labels), labels[0].shape)
+            # map_labels = self.build_label_map(hts, labels, sequence_output.device)
+            
             labels = torch.cat(labels, dim=0).to(logits)
-            loss = self.loss_fnt(logits.float(), labels.float())
+            # dice_loss = self.dice_loss(feature_map.permute(0, 3, 1, 2), map_labels)
+            re_loss = self.loss_fnt(logits.float(), labels.float())
+            loss =  re_loss
             output = (loss.to(sequence_output), ) + output
         return output
 

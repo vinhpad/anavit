@@ -1,10 +1,6 @@
 import json
 import numpy as np
 from tqdm import tqdm
-from spacy.tokens import Doc
-import spacy
-
-nlp = spacy.load('en_core_web_sm')
 
 docred_rel2id = json.load(open('meta/rel2id.json', 'r'))
 cdr_rel2id = {'1:NR:2': 0, '1:CID:2': 1}
