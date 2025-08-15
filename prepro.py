@@ -197,7 +197,7 @@ def read_cdr(file_in, tokenizer, max_seq_length=1024):
 
                 relations, hts = [], []
                 for h, t in train_triples.keys():
-                    relation = [0] * len(gda_rel2id)
+                    relation = [0] * len(cdr_rel2id)
                     for mention in train_triples[h, t]:
                         relation[mention["relation"]] = 1
                     relations.append(relation)
