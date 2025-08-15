@@ -197,7 +197,7 @@ class DocREModel(nn.Module):
 
         sequence_output, attention = self.encode(input_ids, attention_mask)
         map_rss = self.get_channel_map(sequence_output, attention, entity_pos, hts, graph)
-        feature_map = self.mlp(map_rss)
+        feature_map = self.vit(map_rss)
         # print(feature_map.shape)
         bl = self.get_ht(feature_map, hts)
         

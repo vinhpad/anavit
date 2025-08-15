@@ -8,7 +8,7 @@ from transformers import AutoConfig, AutoModel, AutoTokenizer
 from transformers.optimization import AdamW, get_linear_schedule_with_warmup
 from model import DocREModel
 from utils import set_seed, collate_fn
-from prepro import read_cdr
+from prepro import read_gda
 import wandb
 from torch.cuda.amp import GradScaler
 
@@ -243,7 +243,7 @@ def main():
         args.tokenizer_name
         if args.tokenizer_name else args.model_name_or_path, )
 
-    read = read_cdr
+    read = read_gda
 
     train_file = os.path.join(args.data_dir, args.train_file)
     dev_file = os.path.join(args.data_dir, args.dev_file)
@@ -257,12 +257,13 @@ def main():
     test_features = read(test_file,
                          tokenizer,
                          max_seq_length=args.max_seq_length)
-
+    print(args.model_name_or_path)
     model = AutoModel.from_pretrained(
         args.model_name_or_path,
-        from_tf=bool(args.model_name_or_path),
+        from_tf=bool(".ckpt" in args.model_name_or_path),
         config=config,
     )
+
 
     config.cls_token_id = tokenizer.cls_token_id
     config.sep_token_id = tokenizer.sep_token_id

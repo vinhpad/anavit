@@ -1,6 +1,5 @@
-python train_bio.py --data_dir ./dataset/cdr \
+python train_cdr.py --data_dir ./dataset/cdr \
 --transformer_type bert \
---model_name_or_path allenai/scibert_scivocab_cased \
 --train_file train_filter.data \
 --dev_file dev_filter.data \
 --test_file test_filter.data \
