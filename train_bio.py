@@ -50,6 +50,7 @@ def train(args, model, train_features, dev_features, test_features):
                     'labels': batch[2],
                     'entity_pos': batch[3],
                     'hts': batch[4],
+                    'graph': batch[5]
                 }
                 outputs = model(**inputs)
                 loss = outputs[0] / args.gradient_accumulation_steps
@@ -130,6 +131,7 @@ def evaluate(args, model, features, tag="dev"):
             'attention_mask': batch[1].to(args.device),
             'entity_pos': batch[3],
             'hts': batch[4],
+            'graph': batch[5]
         }
 
         with torch.no_grad():
@@ -220,16 +222,12 @@ def main():
                         type=int,
                         default=2,
                         help="Number of relation types in dataset.")
-    parser.add_argument('--n_skip', type=int,
-                    default=3, help='using number of skip-connect, default is num')
-    parser.add_argument('--vit_name', type=str,
-                    default='R50-ViT-B_16', help='select one vit model')
-    parser.add_argument('--vit_patches_size', type=int,
-                    default=16, help='vit_patches_size, default is 16')
-    parser.add_argument('--img_size', type=int,
-                    default=224, help='input patch size of network input')
+    
+    parser.add_argument("--attn_heads", default=2, type=int, help="Attention heads")
+    parser.add_argument("--gcn_layers", default=2, type=int, help="GCN layers")
+    parser.add_argument("--iters", default=2, type=int, help="Iteration")
+    parser.add_argument("--use_graph", default=True, action="store_true", help="Use graph")
 
-    parser.add_argument("--segmentation_net", default='unet' ,type=str)
     args = parser.parse_args()
     wandb.init(project="CNN-CDR")
 
@@ -262,7 +260,7 @@ def main():
 
     model = AutoModel.from_pretrained(
         args.model_name_or_path,
-        from_tf=bool(".ckpt" in args.model_name_or_path),
+        from_tf=bool(args.model_name_or_path),
         config=config,
     )
 

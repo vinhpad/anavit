@@ -2,7 +2,8 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-class MLP(nn.Module):
+class ViT(nn.Module):
+    
     def __init__(self, in_channels, out_channels, hidden_dim, num_heads=3, kernel_size=5, dropout=0.1):
         super().__init__()
         self.conv = nn.Conv2d(in_channels, out_channels, kernel_size=kernel_size, padding=kernel_size // 2)
